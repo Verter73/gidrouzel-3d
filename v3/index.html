@@ -168,8 +168,8 @@ body { margin: 0; overflow: hidden; }
   transition: transform 0.15s ease;
 }
 .row.collapsed .caret { transform: rotate(-90deg); }
-.row .children { list-style: none; margin: 0; padding: 0 0 0 14px; display: flex; flex-direction: column; gap: 2px; }
-.row.collapsed .children { display: none; }
+.children { list-style: none; margin: 0; padding: 0 0 0 14px; display: flex; flex-direction: column; gap: 2px; }
+.row.collapsed + .children { display: none; }
 
 .eye {
   flex: none;
@@ -241,11 +241,7 @@ body { margin: 0; overflow: hidden; }
   .panel { border-left: none; border-top: 1px solid var(--line); }
   .viewbar { flex-wrap: wrap; }
 }
-body,p,li,td,th,figcaption,caption{text-align:left}
-p,li{max-width:78ch;text-wrap:pretty}
 </style>
-</head>
-<body>
 
 <div class="app">
   <div class="viewport" id="viewport">
@@ -272,7 +268,7 @@ p,li{max-width:78ch;text-wrap:pretty}
 
       <div class="section">
         <div class="card" id="card">
-          <div class="cname" id="cardName">Сборка целиком</div>
+          <div class="cname" id="cardName">3D-сборка · версия 3</div>
           <div class="dim"><span class="k">Габарит</span><span id="cardDim" class="num">—</span></div>
           <div class="hintline" id="cardHint">Щёлкните деталь, чтобы выбрать</div>
           <div class="btn-row" id="cardBtns" hidden>
@@ -628,7 +624,7 @@ function updateCard() {
     hintEl.style.display = 'none';
     btns.hidden = false;
   } else {
-    nameEl.textContent = 'Сборка целиком';
+    nameEl.textContent = '3D-сборка · версия 3';
     dimEl.textContent = fmtDim(modelBox);
     hintEl.style.display = '';
     hintEl.textContent = 'Щёлкните деталь, чтобы выбрать';
@@ -670,7 +666,7 @@ function makeRow(name, parts, opts) {
     row.appendChild(badge);
   }
 
-  row.addEventListener('click', () => setSelection(parts));
+  row.addEventListener('click', (e) => { if (e.target.classList && e.target.classList.contains('caret')) return; setSelection(parts); });
 
   li.appendChild(row);
   if (opts && opts.children) {
@@ -682,7 +678,7 @@ function makeRow(name, parts, opts) {
     caret.className = 'caret';
     caret.textContent = '▾';
     row.insertBefore(caret, eye);
-    row.classList.add('header');
+    row.classList.add('header', 'collapsed');
     row.addEventListener('click', (e) => {
       if (e.target === caret) {
         row.classList.toggle('collapsed');
@@ -912,6 +908,240 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// ---- Share (вид в адресе) ----
+const SHARE = (() => {
+  const CB = ['xray', 'grid', 'edges', 'clipOn', 'clipFlip', 'secFlip', 'secFill', 'secBounds'];
+  const RG = ['explode', 'clipPos', 'secPos', 'secBoxxMin', 'secBoxxMax', 'secBoxyMin', 'secBoxyMax', 'secBoxzMin', 'secBoxzMax'];
+  const SG = [['secMode', 'mode'], ['secAxis', 'axis'], ['clipAxis', 'axis']];
+  const BOX = ['secBoxxMin', 'secBoxxMax', 'secBoxyMin', 'secBoxyMax', 'secBoxzMin', 'secBoxzMax'];
+  const DEF = {};
+  let inited = false;
+  let timer = 0;
+
+  function packIdx(arr) {
+    const a = [...arr].sort((x, y) => x - y);
+    const out = [];
+    let i = 0;
+    while (i < a.length) {
+      let j = i;
+      while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+      if (j - i + 1 >= 3) out.push(a[i] + '-' + a[j]);
+      else for (let k = i; k <= j; k++) out.push(String(a[k]));
+      i = j + 1;
+    }
+    return out.join('.');
+  }
+
+  function unpackIdx(str) {
+    const out = [];
+    if (!str) return out;
+    for (const t of String(str).split('.')) {
+      if (!t) continue;
+      const m = t.match(/^(\d+)-(\d+)$/);
+      if (m) {
+        const a = +m[1], b = +m[2];
+        for (let k = a; k <= b; k++) out.push(k);
+      } else if (/^\d+$/.test(t)) out.push(+t);
+    }
+    return out;
+  }
+
+  function sgActive(id, attr) {
+    const el = $(id);
+    if (!el) return null;
+    const b = el.querySelector('button[data-' + attr + '].active');
+    return b ? b.getAttribute('data-' + attr) : null;
+  }
+
+  function encode() {
+    const q = [];
+    const cam = [
+      camera.position.x, camera.position.y, camera.position.z,
+      controls.target.x, controls.target.y, controls.target.z
+    ].map(n => (Math.round(n * 1000) / 1000).toString()).join(',');
+    q.push('c=' + cam);
+    const hid = [];
+    for (let i = 0; i < parts.length; i++) if (!parts[i].object.visible) hid.push(i);
+    if (hid.length) q.push('h=' + packIdx(hid));
+    const sel = [];
+    for (let i = 0; i < parts.length; i++) if (selection.has(parts[i])) sel.push(i);
+    if (sel.length) q.push('s=' + packIdx(sel));
+    for (const id of CB) {
+      const el = $(id);
+      if (!el) continue;
+      const v = el.checked ? '1' : '0';
+      if (v !== DEF[id]) q.push(id + '=' + v);
+    }
+    for (const id of RG) {
+      const el = $(id);
+      if (!el) continue;
+      if (el.value !== DEF[id]) q.push(id + '=' + el.value);
+    }
+    for (const [id, attr] of SG) {
+      const v = sgActive(id, attr);
+      if (v !== null && v !== DEF[id]) q.push(id + '=' + v);
+    }
+    return q.join('&');
+  }
+
+  function save() {
+    try {
+      const s = encode();
+      history.replaceState(null, '', s ? '#' + s : location.pathname + location.search);
+    } catch (e) { /* ignore */ }
+  }
+
+  function restore() {
+    const raw = location.hash.replace(/^#/, '');
+    if (!raw) return false;
+    const map = {};
+    for (const pair of raw.split('&')) {
+      if (!pair) continue;
+      const eq = pair.indexOf('=');
+      if (eq < 0) continue;
+      try {
+        map[decodeURIComponent(pair.slice(0, eq))] = decodeURIComponent(pair.slice(eq + 1));
+      } catch (e) { /* ignore */ }
+    }
+    let camOk = false;
+    try {
+      for (const [id, attr] of SG) {
+        if (!(id in map)) continue;
+        const el = $(id);
+        if (!el) continue;
+        const b = el.querySelector('button[data-' + attr + '="' + map[id] + '"]');
+        if (b) b.click();
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      for (const id of RG) {
+        if (!(id in map)) continue;
+        const el = $(id);
+        if (!el) continue;
+        el.value = map[id];
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      for (const id of BOX) {
+        if (!(id in map)) continue;
+        const el = $(id);
+        if (!el) continue;
+        el.value = map[id];
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      for (const id of CB) {
+        if (!(id in map)) continue;
+        const el = $(id);
+        if (!el) continue;
+        el.checked = map[id] === '1';
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      for (let i = 0; i < parts.length; i++) parts[i].object.visible = true;
+      if ('h' in map) {
+        for (const i of unpackIdx(map.h)) {
+          if (i >= 0 && i < parts.length) parts[i].object.visible = false;
+        }
+      }
+      const byUuid = new Map();
+      for (const p of parts) byUuid.set(p.object.uuid, p);
+      for (const row of document.querySelectorAll('.row[data-parts]')) {
+        const eye = row.querySelector('.eye');
+        if (!eye) continue;
+        const ids = row.getAttribute('data-parts').split(',');
+        let any = false;
+        for (const u of ids) {
+          const p = byUuid.get(u);
+          if (p && p.object.visible) { any = true; break; }
+        }
+        eye.classList.toggle('off', !any);
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      const list = [];
+      if ('s' in map) {
+        for (const i of unpackIdx(map.s)) {
+          if (i >= 0 && i < parts.length) list.push(parts[i]);
+        }
+      }
+      setSelection(list);
+      updateTreeSelection();
+    } catch (e) { /* ignore */ }
+    try {
+      if ('c' in map) {
+        const n = map.c.split(',').map(Number);
+        if (n.length === 6 && n.every(Number.isFinite)) {
+          camAnim = null;
+          camera.position.set(n[0], n[1], n[2]);
+          controls.target.set(n[3], n[4], n[5]);
+          controls.update();
+          camOk = true;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return camOk;
+  }
+
+  function init() {
+    if (inited) return;
+    inited = true;
+    for (const id of CB) {
+      const el = $(id);
+      if (el) DEF[id] = el.checked ? '1' : '0';
+    }
+    for (const id of RG) {
+      const el = $(id);
+      if (el) DEF[id] = el.value;
+    }
+    for (const [id, attr] of SG) {
+      const v = sgActive(id, attr);
+      if (v !== null) DEF[id] = v;
+    }
+    const vb = $('viewbar');
+    if (vb && !$('btnShare')) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.setAttribute('aria-hidden', 'true');
+      const btn = document.createElement('button');
+      btn.id = 'btnShare';
+      btn.type = 'button';
+      btn.textContent = 'Ссылка';
+      btn.addEventListener('click', () => {
+        const s = encode();
+        const url = location.href.split('#')[0] + (s ? '#' + s : '');
+        const done = () => {
+          btn.textContent = 'Скопировано';
+          setTimeout(() => { btn.textContent = 'Ссылка'; }, 1500);
+        };
+        try {
+          navigator.clipboard.writeText(url).then(done, () => {
+            window.prompt('Скопируйте ссылку', url);
+            done();
+          });
+        } catch (e) {
+          window.prompt('Скопируйте ссылку', url);
+          done();
+        }
+      });
+      vb.appendChild(sep);
+      vb.appendChild(btn);
+    }
+    const deb = () => {
+      clearTimeout(timer);
+      timer = setTimeout(save, 700);
+    };
+    document.addEventListener('input', deb, true);
+    document.addEventListener('change', deb, true);
+    document.addEventListener('click', deb, true);
+    controls.addEventListener('end', deb);
+    window.addEventListener('hashchange', () => restore());
+  }
+
+  return { init, restore };
+})();
+
 // ---- Load ----
 function showOverlay(text, err) {
   overlayBox.textContent = text;
@@ -950,7 +1180,7 @@ async function loadBuffer() {
   return await res.arrayBuffer();
 }
 
-// source has no colors: tint by part type (sheet RAL 7035-like, frame graphite, handles black)
+// STEP has no colors: tint by part type (sheet RAL 7035-like, frame graphite, handles black)
 const TINTS = [[/Профиль/, 0x4a5157], [/Ручка/, 0x1c1f22], [/Дверь/, 0xc9ced2], [/Крыш|Полотно/, 0xaab2b8], [/.*/, 0xd7dbde]];
 function finalize(gltf) {
   // GLTFLoader sanitizes and de-duplicates names (adds _1, _2); keep the original CAD node name
@@ -959,8 +1189,16 @@ function finalize(gltf) {
   }
   gltf.scene.traverse((o) => {
     if (!o.isMesh) return;
+    // сетка из 3D-PDF (PRC): грани развёрнуты, без этого модель чёрная; включается window.FIX_PRC_MESH = true до скрипта
+    if (window.FIX_PRC_MESH && o.geometry.index) {
+      const A = o.geometry.index.array;
+      for (let i = 0; i < A.length; i += 3) { const t = A[i + 1]; A[i + 1] = A[i + 2]; A[i + 2] = t; }
+      o.geometry.index.needsUpdate = true;
+      o.geometry.deleteAttribute('normal');
+      o.geometry.computeVertexNormals();
+    }
     const tint = TINTS.find(([re]) => re.test(nearestName(o)))[1];
-    o.material = new THREE.MeshStandardMaterial({ color: tint, metalness: 0.15, roughness: 0.6 });
+    o.material = new THREE.MeshStandardMaterial({ color: tint, metalness: 0.15, roughness: 0.6, side: window.FIX_PRC_MESH ? THREE.DoubleSide : THREE.FrontSide });
   });
   root = new THREE.Group();
   root.add(gltf.scene);
@@ -1005,7 +1243,8 @@ function finalize(gltf) {
   buildTree(groups);
   updateCard();
 
-  goView('iso');
+  SHARE.init();
+  if (!SHARE.restore()) goView('iso');
   hideOverlay();
 }
 
